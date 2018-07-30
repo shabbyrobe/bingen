@@ -1,8 +1,5 @@
 package bingen
 
-// TODO:
-// - ignore patterns
-
 import (
 	"bytes"
 	"compress/gzip"
@@ -10,7 +7,6 @@ import (
 	"flag"
 	"fmt"
 	"go/format"
-	"io"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -56,38 +52,47 @@ func IsUsageError(err error) bool {
 	return ok
 }
 
+const (
+	Base64 = "base64"
+	Bytes  = "bytes"
+)
+
 type Command struct {
 	out    string
 	pkg    string
 	name   string
-	b64    bool
+	mode   string
 	nofmt  bool
 	gzip   int
 	ignore stringList
+	tags   string
 }
 
 func (m *Command) Flags(fs *flag.FlagSet) {
-	fs.StringVar(&m.out, "out", "", "")
-	fs.StringVar(&m.pkg, "pkg", "", "")
-	fs.StringVar(&m.name, "name", "files", "")
-	fs.BoolVar(&m.b64, "b64", false, "")
-	fs.BoolVar(&m.nofmt, "nofmt", false, "")
-	fs.IntVar(&m.gzip, "gzip", 0, "gzip compression level (0 for none)")
-	fs.Var(&m.ignore, "ignore", "regexp patterns to ignore")
+	fs.StringVar(&m.out, "out", "", "Output file")
+	fs.StringVar(&m.pkg, "pkg", "", "Output package (uses the GOPACKAGE env var if empty)")
+	fs.StringVar(&m.name, "name", "files", "Output variable name")
+	fs.StringVar(&m.mode, "mode", Base64, "Encode mode (base64, bytes)")
+	fs.BoolVar(&m.nofmt, "nofmt", false, "Do not run gofmt after generation")
+	fs.IntVar(&m.gzip, "gzip", 9, "gzip compression level (0 for none)")
+	fs.Var(&m.ignore, "ignore", "regexp pattern to ignore. Can pass multiple times.")
 }
 
-func (m *Command) Usage() string { return Usage }
+func (m *Command) Synopsis() string { return "Embed binary files into Go source" }
+func (m *Command) Usage() string    { return Usage }
 
-func (m *Command) Run(args ...string) error {
+func (m *Command) Run(args ...string) (rerr error) {
 	if len(args) == 0 {
 		return usageError("binmap: missing <input> argument(s)")
 	}
-
 	if m.pkg == "" {
 		m.pkg = os.Getenv("GOPACKAGE")
 	}
 	if m.pkg == "" {
 		return usageError("binmap: must specify package using -pkg or $GOPACKAGE")
+	}
+	if m.out == "" {
+		return usageError("binmap: must specify output using -out")
 	}
 
 	var buf bytes.Buffer
@@ -119,24 +124,30 @@ func (m *Command) Run(args ...string) error {
 
 	// Generate output map
 	var fileData bytes.Buffer
-	if m.b64 {
-		if err := writeFilesAsBase64(&fileData, names, files); err != nil {
-			return err
+	{
+		var err error
+		switch m.mode {
+		case Base64:
+			err = writeFilesAsBase64(&fileData, names, files)
+		case Bytes:
+			err = writeFilesAsByteArray(&fileData, names, files)
+		default:
+			err = fmt.Errorf("unknown mode %q", m.mode)
 		}
-	} else {
-		if err := writeFilesAsByteArray(&fileData, names, files); err != nil {
+		if err != nil {
 			return err
 		}
 	}
 
 	// Create source file
 	tpl := template.Must(template.New("").Parse(binMapTpl))
-	err = tpl.Execute(&buf, struct {
-		Package  string
-		Name     string
-		Map      string
-		Deflated bool
-	}{Package: m.pkg, Name: m.name, Map: fileData.String(), Deflated: m.gzip != 0})
+	err = tpl.Execute(&buf, &binMapVars{
+		Package:  m.pkg,
+		Name:     m.name,
+		Tags:     m.tags,
+		Map:      fileData.String(),
+		Deflated: m.gzip != 0,
+	})
 	if err != nil {
 		return err
 	}
@@ -152,37 +163,28 @@ func (m *Command) Run(args ...string) error {
 		}
 	}
 
-	var writer io.Writer
-	if m.out == "" {
-		writer = os.Stdout
-	} else {
-		if fileExists(m.out) {
-			contents, err := ioutil.ReadFile(m.out)
-			if err != nil {
-				return err
-			}
-			if bytes.Equal(contents, p) {
-				fmt.Fprintf(os.Stderr, "binmap: unmodified %v\n", names)
-				return nil
-			}
-		}
-		writer, err = os.OpenFile(m.out, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
-		if err != nil {
+	if exists, err := fileExists(m.out); err != nil {
+		return err
+
+	} else if exists {
+		if mod, err := isModified(m.out, p); err != nil {
 			return err
+		} else if mod {
+			return fmt.Errorf("binmap: unmodified %v\n", names)
 		}
 	}
-	_, err = writer.Write(p)
+
+	f, err := os.OpenFile(m.out, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
 		return err
 	}
+	defer f.Close()
 
-	if wc, ok := writer.(io.WriteCloser); ok && wc != os.Stdout {
-		err = wc.Close()
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(os.Stderr, "binmap: created %v\n", names)
+	if _, err := f.Write(p); err != nil {
+		return err
 	}
+
+	fmt.Fprintf(os.Stderr, "binmap: created %v\n", names)
 
 	return nil
 }
@@ -246,6 +248,17 @@ func gzipFiles(files map[string][]byte, level int) error {
 		files[n] = buf.Bytes()
 	}
 	return nil
+}
+
+func isModified(file string, orig []byte) (bool, error) {
+	contents, err := ioutil.ReadFile(file)
+	if err != nil {
+		return false, err
+	}
+	if bytes.Equal(contents, orig) {
+		return false, nil
+	}
+	return true, nil
 }
 
 func loadFiles(in []input, ignore []*regexp.Regexp) (names []string, files map[string][]byte, err error) {
@@ -324,11 +337,15 @@ func readInputs(in []string) (r []input, err error) {
 	return
 }
 
-func fileExists(path string) bool {
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return false
+func fileExists(path string) (bool, error) {
+	_, err := os.Stat(path)
+	if err == nil {
+		return true, nil
 	}
-	return true
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
 }
 
 func wrap(s string, w int) string {
@@ -363,12 +380,20 @@ func (s *stringList) Set(v string) error {
 	return nil
 }
 
+type binMapVars struct {
+	Package  string
+	Name     string
+	Tags     string
+	Map      string
+	Deflated bool
+}
+
 var binMapTpl = `
-// This code was autogenerated from "binmap"
-// DO NOT MODIFY THIS FILE DIRECTLY!
-// Your changes will be overwritten!
+// Code generated by 'github.com/shabbyrobe/go-bingen'. DO NOT EDIT.
 
 {{ if .Deflated }}// File data is compressed! See compress/gzip.{{ end }}
+
+{{ if .Tags }}// +build {{.Tags}}{{ end }}
 
 package {{.Package}}
 

@@ -18,24 +18,28 @@ func main() {
 func run() error {
 	bmc := bingen.Command{}
 
-	var help bool
 	var fs = &flag.FlagSet{}
 	bmc.Flags(fs)
-	fs.BoolVar(&help, "help", false, "help")
-	fs.Parse(os.Args[1:])
-	if help {
-		fmt.Println(bmc.Usage())
-		return nil
+	if err := fs.Parse(os.Args[1:]); err != nil {
+		if err == flag.ErrHelp {
+			help(&bmc, fs)
+			return nil
+		}
+		return err
 	}
 
 	err := bmc.Run(fs.Args()...)
 	if bingen.IsUsageError(err) {
-		fmt.Println(err)
+		help(&bmc, fs)
 		fmt.Println()
-		fmt.Println(bmc.Usage())
-		fmt.Println("Flags:")
-		fs.PrintDefaults()
+		fmt.Println("error:", err)
 		return nil
 	}
 	return err
+}
+
+func help(bmc *bingen.Command, fs *flag.FlagSet) {
+	fmt.Println(bmc.Usage())
+	fmt.Println("Flags:")
+	fs.PrintDefaults()
 }
