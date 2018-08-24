@@ -170,7 +170,8 @@ func (m *Command) Run(args ...string) (rerr error) {
 		if mod, err := isModified(m.out, p); err != nil {
 			return err
 		} else if mod {
-			return fmt.Errorf("binmap: unmodified %v\n", names)
+			fmt.Fprintf(os.Stderr, "binmap: unmodified %v\n", names)
+			return nil
 		}
 	}
 
