@@ -73,6 +73,7 @@ func (m *Command) Flags(fs *flag.FlagSet) {
 	fs.StringVar(&m.pkg, "pkg", "", "Output package (uses the GOPACKAGE env var if empty)")
 	fs.StringVar(&m.name, "name", "files", "Output variable name")
 	fs.StringVar(&m.mode, "mode", Base64, "Encode mode (base64, bytes)")
+	fs.StringVar(&m.tags, "tags", "", "Build tags")
 	fs.BoolVar(&m.nofmt, "nofmt", false, "Do not run gofmt after generation")
 	fs.IntVar(&m.gzip, "gzip", 9, "gzip compression level (0 for none)")
 	fs.Var(&m.ignore, "ignore", "regexp pattern to ignore. Can pass multiple times.")
@@ -169,7 +170,7 @@ func (m *Command) Run(args ...string) (rerr error) {
 	} else if exists {
 		if mod, err := isModified(m.out, p); err != nil {
 			return err
-		} else if mod {
+		} else if !mod {
 			fmt.Fprintf(os.Stderr, "binmap: unmodified %v\n", names)
 			return nil
 		}
