@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"text/template"
 )
@@ -263,11 +264,11 @@ func isModified(file string, orig []byte) (bool, error) {
 	return true, nil
 }
 
-func loadFiles(in []input, ignore []*regexp.Regexp) (names []string, files map[string][]byte, err error) {
+func loadFiles(inputs []input, ignore []*regexp.Regexp) (names []string, files map[string][]byte, err error) {
 	files = make(map[string][]byte)
 	names = make([]string, 0)
 
-	addFile := func(base input, src string) error {
+	addFile := func(base input, src string, isDir bool) error {
 		for _, ig := range ignore {
 			if ig.MatchString(src) {
 				return nil
@@ -276,11 +277,16 @@ func loadFiles(in []input, ignore []*regexp.Regexp) (names []string, files map[s
 
 		src = filepath.ToSlash(src)
 
-		key := src
+		key := strings.TrimLeft(src, "/")
+		parts := strings.Split(key, "/")
+		if len(parts) < base.Strip {
+			return fmt.Errorf("path shorter than strip")
+		}
+		parts = parts[base.Strip:]
+		key = strings.Join(parts, "/")
+
 		if base.Alias != "" {
-			if strings.HasPrefix(src, base.Path) {
-				key = base.Alias + "/" + strings.TrimLeft(key[len(base.Path):], "/")
-			}
+			key = base.Alias + "/" + key
 		}
 
 		files[key], err = ioutil.ReadFile(filepath.FromSlash(src))
@@ -291,52 +297,63 @@ func loadFiles(in []input, ignore []*regexp.Regexp) (names []string, files map[s
 		return nil
 	}
 
-	for _, src := range in {
+	for _, src := range inputs {
 		var fi os.FileInfo
-		fi, err = os.Stat(src.Path)
+		fi, err := os.Stat(src.Path)
 		if err != nil {
-			return
+			return nil, nil, err
 		}
+
 		if fi.IsDir() {
-			err = filepath.Walk(src.Path, func(path string, info os.FileInfo, err error) error {
+			if err := filepath.Walk(src.Path, func(path string, info os.FileInfo, err error) error {
 				if err != nil {
 					return err
 				}
 				if !info.IsDir() {
-					if err = addFile(src, path); err != nil {
+					if err = addFile(src, path, true); err != nil {
 						return err
 					}
 				}
 				return nil
-			})
-			if err != nil {
-				return
+
+			}); err != nil {
+				return nil, nil, err
 			}
-		} else {
-			if err = addFile(src, src.Path); err != nil {
-				return
-			}
+
+		} else if err := addFile(src, src.Path, false); err != nil {
+			return nil, nil, err
 		}
 	}
+
 	sort.Strings(names)
 	return
 }
 
 type input struct {
 	Alias string
+	Strip int
 	Path  string
 }
 
 func readInputs(in []string) (r []input, err error) {
 	for _, v := range in {
-		parts := strings.SplitN(v, ":", 2)
+		parts := strings.SplitN(v, ":", 3)
 		if len(parts) == 1 {
-			r = append(r, input{"", filepath.ToSlash(parts[0])})
+			r = append(r, input{"", 0, filepath.ToSlash(parts[0])})
+
+		} else if len(parts) == 2 {
+			r = append(r, input{parts[0], 0, filepath.ToSlash(parts[1])})
+
 		} else {
-			r = append(r, input{parts[0], filepath.ToSlash(parts[1])})
+			split, err := strconv.ParseInt(parts[1], 10, 0)
+			if err != nil {
+				return nil, fmt.Errorf("cannot parse split: %v", err)
+			}
+			r = append(r, input{parts[0], int(split), filepath.ToSlash(parts[2])})
 		}
 	}
-	return
+
+	return r, nil
 }
 
 func fileExists(path string) (bool, error) {
