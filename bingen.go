@@ -53,17 +53,31 @@ func IsUsageError(err error) bool {
 	return ok
 }
 
+type Mode string
+
+func (m Mode) String() string { return string(m) }
+
+func (m *Mode) Set(s string) error {
+	v := Mode(s)
+	if v != Base64 && v != Bytes {
+		return fmt.Errorf("bingen: invalid mode %q", s)
+	}
+	*m = v
+	return nil
+}
+
 const (
-	Base64 = "base64"
-	Bytes  = "bytes"
+	Base64 Mode = "base64"
+	Bytes  Mode = "bytes"
 )
 
 type Command struct {
 	out    string
 	pkg    string
 	name   string
-	mode   string
+	mode   Mode
 	nofmt  bool
+	rawMap bool
 	gzip   int
 	ignore stringList
 	tags   string
@@ -73,9 +87,10 @@ func (m *Command) Flags(fs *flag.FlagSet) {
 	fs.StringVar(&m.out, "out", "", "Output file")
 	fs.StringVar(&m.pkg, "pkg", "", "Output package (uses the GOPACKAGE env var if empty)")
 	fs.StringVar(&m.name, "name", "files", "Output variable name")
-	fs.StringVar(&m.mode, "mode", Base64, "Encode mode (base64, bytes)")
+	fs.Var(&m.mode, "mode", "Encode mode (base64, bytes)")
 	fs.StringVar(&m.tags, "tags", "", "Build tags")
 	fs.BoolVar(&m.nofmt, "nofmt", false, "Do not run gofmt after generation")
+	fs.BoolVar(&m.rawMap, "rawmap", false, "Use a raw map instead of a Config")
 	fs.IntVar(&m.gzip, "gzip", 9, "gzip compression level (0 for none)")
 	fs.Var(&m.ignore, "ignore", "regexp pattern to ignore. Can pass multiple times.")
 }
@@ -95,6 +110,9 @@ func (m *Command) Run(args ...string) (rerr error) {
 	}
 	if m.out == "" {
 		return usageError("binmap: must specify output using -out")
+	}
+	if m.mode == "" {
+		m.mode = Base64
 	}
 
 	var buf bytes.Buffer
@@ -147,8 +165,10 @@ func (m *Command) Run(args ...string) (rerr error) {
 		Package:  m.pkg,
 		Name:     m.name,
 		Tags:     m.tags,
-		Map:      fileData.String(),
+		Map:      strings.TrimSpace(fileData.String()),
 		Deflated: m.gzip != 0,
+		Mode:     string(m.mode),
+		AsConfig: !m.rawMap,
 	})
 	if err != nil {
 		return err
@@ -405,6 +425,8 @@ type binMapVars struct {
 	Tags     string
 	Map      string
 	Deflated bool
+	AsConfig bool
+	Mode     string
 }
 
 var binMapTpl = `
@@ -416,5 +438,15 @@ var binMapTpl = `
 
 package {{.Package}}
 
+{{ if .AsConfig }}
+import "github.com/shabbyrobe/go-bingen/binfs"
+
+var {{.Name}} = binfs.Config{
+	Gzip: {{ if .Deflated }}true{{ else }}false{{ end }},
+	Mode: {{printf "%q" .Mode}},
+	Data: {{.Map -}},
+}
+{{ else }}
 var {{.Name}} = {{.Map}}
+{{ end }}
 `
