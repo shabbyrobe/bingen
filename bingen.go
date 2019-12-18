@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"text/template"
 )
@@ -52,17 +53,31 @@ func IsUsageError(err error) bool {
 	return ok
 }
 
+type Mode string
+
+func (m Mode) String() string { return string(m) }
+
+func (m *Mode) Set(s string) error {
+	v := Mode(s)
+	if v != Base64 && v != Bytes {
+		return fmt.Errorf("bingen: invalid mode %q", s)
+	}
+	*m = v
+	return nil
+}
+
 const (
-	Base64 = "base64"
-	Bytes  = "bytes"
+	Base64 Mode = "base64"
+	Bytes  Mode = "bytes"
 )
 
 type Command struct {
 	out    string
 	pkg    string
 	name   string
-	mode   string
+	mode   Mode
 	nofmt  bool
+	rawMap bool
 	gzip   int
 	ignore stringList
 	tags   string
@@ -72,8 +87,10 @@ func (m *Command) Flags(fs *flag.FlagSet) {
 	fs.StringVar(&m.out, "out", "", "Output file")
 	fs.StringVar(&m.pkg, "pkg", "", "Output package (uses the GOPACKAGE env var if empty)")
 	fs.StringVar(&m.name, "name", "files", "Output variable name")
-	fs.StringVar(&m.mode, "mode", Base64, "Encode mode (base64, bytes)")
+	fs.Var(&m.mode, "mode", "Encode mode (base64, bytes)")
+	fs.StringVar(&m.tags, "tags", "", "Build tags")
 	fs.BoolVar(&m.nofmt, "nofmt", false, "Do not run gofmt after generation")
+	fs.BoolVar(&m.rawMap, "rawmap", false, "Use a raw map instead of a Config")
 	fs.IntVar(&m.gzip, "gzip", 9, "gzip compression level (0 for none)")
 	fs.Var(&m.ignore, "ignore", "regexp pattern to ignore. Can pass multiple times.")
 }
@@ -93,6 +110,9 @@ func (m *Command) Run(args ...string) (rerr error) {
 	}
 	if m.out == "" {
 		return usageError("binmap: must specify output using -out")
+	}
+	if m.mode == "" {
+		m.mode = Base64
 	}
 
 	var buf bytes.Buffer
@@ -145,8 +165,10 @@ func (m *Command) Run(args ...string) (rerr error) {
 		Package:  m.pkg,
 		Name:     m.name,
 		Tags:     m.tags,
-		Map:      fileData.String(),
+		Map:      strings.TrimSpace(fileData.String()),
 		Deflated: m.gzip != 0,
+		Mode:     string(m.mode),
+		AsConfig: !m.rawMap,
 	})
 	if err != nil {
 		return err
@@ -169,7 +191,7 @@ func (m *Command) Run(args ...string) (rerr error) {
 	} else if exists {
 		if mod, err := isModified(m.out, p); err != nil {
 			return err
-		} else if mod {
+		} else if !mod {
 			fmt.Fprintf(os.Stderr, "binmap: unmodified %v\n", names)
 			return nil
 		}
@@ -262,11 +284,11 @@ func isModified(file string, orig []byte) (bool, error) {
 	return true, nil
 }
 
-func loadFiles(in []input, ignore []*regexp.Regexp) (names []string, files map[string][]byte, err error) {
+func loadFiles(inputs []input, ignore []*regexp.Regexp) (names []string, files map[string][]byte, err error) {
 	files = make(map[string][]byte)
 	names = make([]string, 0)
 
-	addFile := func(base input, src string) error {
+	addFile := func(base input, src string, isDir bool) error {
 		for _, ig := range ignore {
 			if ig.MatchString(src) {
 				return nil
@@ -275,11 +297,16 @@ func loadFiles(in []input, ignore []*regexp.Regexp) (names []string, files map[s
 
 		src = filepath.ToSlash(src)
 
-		key := src
+		key := strings.TrimLeft(src, "/")
+		parts := strings.Split(key, "/")
+		if len(parts) < base.Strip {
+			return fmt.Errorf("path shorter than strip")
+		}
+		parts = parts[base.Strip:]
+		key = strings.Join(parts, "/")
+
 		if base.Alias != "" {
-			if strings.HasPrefix(src, base.Path) {
-				key = base.Alias + "/" + strings.TrimLeft(key[len(base.Path):], "/")
-			}
+			key = base.Alias + "/" + key
 		}
 
 		files[key], err = ioutil.ReadFile(filepath.FromSlash(src))
@@ -290,52 +317,63 @@ func loadFiles(in []input, ignore []*regexp.Regexp) (names []string, files map[s
 		return nil
 	}
 
-	for _, src := range in {
+	for _, src := range inputs {
 		var fi os.FileInfo
-		fi, err = os.Stat(src.Path)
+		fi, err := os.Stat(src.Path)
 		if err != nil {
-			return
+			return nil, nil, err
 		}
+
 		if fi.IsDir() {
-			err = filepath.Walk(src.Path, func(path string, info os.FileInfo, err error) error {
+			if err := filepath.Walk(src.Path, func(path string, info os.FileInfo, err error) error {
 				if err != nil {
 					return err
 				}
 				if !info.IsDir() {
-					if err = addFile(src, path); err != nil {
+					if err = addFile(src, path, true); err != nil {
 						return err
 					}
 				}
 				return nil
-			})
-			if err != nil {
-				return
+
+			}); err != nil {
+				return nil, nil, err
 			}
-		} else {
-			if err = addFile(src, src.Path); err != nil {
-				return
-			}
+
+		} else if err := addFile(src, src.Path, false); err != nil {
+			return nil, nil, err
 		}
 	}
+
 	sort.Strings(names)
 	return
 }
 
 type input struct {
 	Alias string
+	Strip int
 	Path  string
 }
 
 func readInputs(in []string) (r []input, err error) {
 	for _, v := range in {
-		parts := strings.SplitN(v, ":", 2)
+		parts := strings.SplitN(v, ":", 3)
 		if len(parts) == 1 {
-			r = append(r, input{"", filepath.ToSlash(parts[0])})
+			r = append(r, input{"", 0, filepath.ToSlash(parts[0])})
+
+		} else if len(parts) == 2 {
+			r = append(r, input{parts[0], 0, filepath.ToSlash(parts[1])})
+
 		} else {
-			r = append(r, input{parts[0], filepath.ToSlash(parts[1])})
+			split, err := strconv.ParseInt(parts[1], 10, 0)
+			if err != nil {
+				return nil, fmt.Errorf("cannot parse split: %v", err)
+			}
+			r = append(r, input{parts[0], int(split), filepath.ToSlash(parts[2])})
 		}
 	}
-	return
+
+	return r, nil
 }
 
 func fileExists(path string) (bool, error) {
@@ -387,6 +425,8 @@ type binMapVars struct {
 	Tags     string
 	Map      string
 	Deflated bool
+	AsConfig bool
+	Mode     string
 }
 
 var binMapTpl = `
@@ -398,5 +438,15 @@ var binMapTpl = `
 
 package {{.Package}}
 
+{{ if .AsConfig }}
+import "github.com/shabbyrobe/go-bingen/binfs"
+
+var {{.Name}} = binfs.Config{
+	Gzip: {{ if .Deflated }}true{{ else }}false{{ end }},
+	Mode: {{printf "%q" .Mode}},
+	Data: {{.Map -}},
+}
+{{ else }}
 var {{.Name}} = {{.Map}}
+{{ end }}
 `
