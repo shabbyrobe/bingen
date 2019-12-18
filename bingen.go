@@ -16,7 +16,7 @@ import (
 	"text/template"
 )
 
-const Usage = `binmap: generate a golang map from binary files
+const Usage = `bingen: generate a golang map from binary files
 
 Usage: bingen [options] <input>...
 
