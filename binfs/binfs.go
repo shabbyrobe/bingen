@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shabbyrobe/go-bingen"
+	"github.com/shabbyrobe/bingen"
 )
 
 type FileSystem interface {
