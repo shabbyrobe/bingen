@@ -115,6 +115,7 @@ func (fs *byteFileSystem) Preload() (FileSystem, error) {
 }
 
 func (fs *byteFileSystem) Open(name string) (http.File, error) {
+	name = cleanURLPath(name)
 	fileData, ok := fs.data[name]
 	if !ok {
 		return nil, os.ErrNotExist
@@ -155,6 +156,8 @@ func (fs *byteLazyFileSystem) Preload() (FileSystem, error) {
 }
 
 func (fs *byteLazyFileSystem) Open(name string) (http.File, error) {
+	name = cleanURLPath(name)
+
 	fs.lock.Lock()
 	defer fs.lock.Unlock()
 
@@ -209,6 +212,8 @@ func (fs *stringLazyFileSystem) Preload() (FileSystem, error) {
 }
 
 func (fs *stringLazyFileSystem) Open(name string) (http.File, error) {
+	name = cleanURLPath(name)
+
 	fs.lock.Lock()
 	defer fs.lock.Unlock()
 
@@ -302,4 +307,8 @@ func readBytes(fileData []byte, withGzip bool) ([]byte, error) {
 		return ioutil.ReadAll(decoder)
 	}
 	return fileData, nil
+}
+
+func cleanURLPath(str string) string {
+	return strings.TrimLeft(str, "/")
 }
