@@ -6,7 +6,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/shabbyrobe/go-bingen"
+	"github.com/shabbyrobe/bingen"
 )
 
 func main() {

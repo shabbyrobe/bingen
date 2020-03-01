@@ -1,3 +1,3 @@
-module github.com/shabbyrobe/go-bingen
+module github.com/shabbyrobe/bingen
 
 go 1.12
