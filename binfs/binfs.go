@@ -32,11 +32,11 @@ type Config struct {
 func (c Config) New() FileSystem {
 	var out FileSystem
 	if c.Mode == bingen.Base64 {
-		out = &stringLazyFileSystem{config: c, data: c.Data.(map[string]string)}
+		out = newStringLazyFileSystem(c, c.Data.(map[string]string))
 	} else if c.Gzip {
-		out = &byteLazyFileSystem{config: c, data: c.Data.(map[string][]byte)}
+		out = newByteLazyFileSystem(c, c.Data.(map[string][]byte))
 	} else {
-		out = &byteFileSystem{config: c, data: c.Data.(map[string][]byte)}
+		out = newByteFileSystem(c, c.Data.(map[string][]byte))
 	}
 	return out
 }
@@ -106,6 +106,13 @@ type byteFileSystem struct {
 	data   map[string][]byte
 }
 
+func newByteFileSystem(c Config, data map[string][]byte) *byteFileSystem {
+	return &byteFileSystem{
+		config: c,
+		data:   data,
+	}
+}
+
 func (fs *byteFileSystem) ReadFile(name string) ([]byte, error) {
 	return readFile(fs, name)
 }
@@ -133,6 +140,14 @@ type byteLazyFileSystem struct {
 	data   map[string][]byte
 	loaded map[string][]byte
 	lock   sync.RWMutex
+}
+
+func newByteLazyFileSystem(c Config, data map[string][]byte) *byteLazyFileSystem {
+	return &byteLazyFileSystem{
+		config: c,
+		data:   data,
+		loaded: map[string][]byte{},
+	}
 }
 
 func (fs *byteLazyFileSystem) ReadFile(name string) ([]byte, error) {
@@ -189,6 +204,14 @@ type stringLazyFileSystem struct {
 	data   map[string]string
 	loaded map[string][]byte
 	lock   sync.RWMutex
+}
+
+func newStringLazyFileSystem(c Config, data map[string]string) *stringLazyFileSystem {
+	return &stringLazyFileSystem{
+		config: c,
+		data:   data,
+		loaded: map[string][]byte{},
+	}
 }
 
 func (fs *stringLazyFileSystem) ReadFile(name string) ([]byte, error) {
